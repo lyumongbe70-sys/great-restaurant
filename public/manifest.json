@@ -1,0 +1,17 @@
+{
+  "name": "위대한 맛집 - Great Restaurant",
+  "short_name": "위대한맛집",
+  "description": "미식가를 위한 맛집 탐색 및 테이블 예약 PWA",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ea580c",
+  "icons": [
+    {
+      "src": "/favicon.svg",
+      "sizes": "192x192 512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
