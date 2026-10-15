@@ -98,6 +98,10 @@ export function App() {
   const [showInstallModal, setShowInstallModal] = useState(false);
   const [copiedSql, setCopiedSql] = useState(false);
 
+  // PWA Install Prompt State
+  const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
+  const [isAppInstalled, setIsAppInstalled] = useState(false);
+
   // Supabase Auth State
   const [currentUser, setCurrentUser] = useState<AuthUserProfile | null>(null);
   const [showAuthModal, setShowAuthModal] = useState(false);
@@ -136,8 +140,45 @@ export function App() {
               setRestaurants(dbRes.restaurants);
               setIsLoading(false);
               return;
+            } else if (searchQuery && searchQuery.trim()) {
+              // 1-1. 반경 내 결과가 없으면 Supabase 전체 지역 DB에서 검색어로 확장 조회
+              const allDbRes = await fetchRestaurantsFromDb({
+                search: searchQuery,
+                category: selectedCategory !== '전체' ? selectedCategory : undefined,
+                userCoords: targetCoords,
+                limit: 100,
+              });
+              if (allDbRes.exists && allDbRes.restaurants.length > 0) {
+                setDataSource('db');
+                setRestaurants(allDbRes.restaurants);
+                setIsLoading(false);
+                return;
+              }
+
+              // 1-2. DB에 검색 결과가 없으면 MOCK 데이터에서 검색어 매칭 fallback
+              const q = searchQuery.toLowerCase().trim();
+              const mockMatches = MOCK_RESTAURANTS.filter((m) => {
+                const matchName = m.name.toLowerCase().includes(q);
+                const matchCategory = m.category.toLowerCase().includes(q);
+                const matchAddress = m.address.toLowerCase().includes(q);
+                const matchMenu = m.menus.some((menu) => menu.name.toLowerCase().includes(q) || (menu.description && menu.description.toLowerCase().includes(q)));
+                const matchDesc = m.description ? m.description.toLowerCase().includes(q) : false;
+                return matchName || matchCategory || matchAddress || matchMenu || matchDesc;
+              });
+
+              if (mockMatches.length > 0) {
+                setDataSource('fallback');
+                setRestaurants(mockMatches);
+                setIsLoading(false);
+                return;
+              }
+
+              setDataSource('db');
+              setRestaurants([]);
+              setIsLoading(false);
+              return;
             } else if (dbTotalCount > 0) {
-              // DB is populated, but 0 stores strictly within this radius/category/search
+              // DB is populated, but 0 stores strictly within this radius/category
               setDataSource('db');
               setRestaurants([]);
               setIsLoading(false);
@@ -245,6 +286,31 @@ export function App() {
     return () => {
       isSubscribed = false;
       unsubscribe();
+    };
+  }, []);
+
+  // Listen for PWA beforeinstallprompt event for one-click installation
+  useEffect(() => {
+    const handleBeforeInstallPrompt = (e: any) => {
+      e.preventDefault();
+      setDeferredPrompt(e);
+    };
+
+    const handleAppInstalled = () => {
+      setIsAppInstalled(true);
+      setDeferredPrompt(null);
+    };
+
+    window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+    window.addEventListener('appinstalled', handleAppInstalled);
+
+    if (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) {
+      setIsAppInstalled(true);
+    }
+
+    return () => {
+      window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
+      window.removeEventListener('appinstalled', handleAppInstalled);
     };
   }, []);
 
@@ -388,6 +454,23 @@ export function App() {
     setCurrentUser(null);
   };
 
+  const handleInstallClick = async () => {
+    if (deferredPrompt) {
+      try {
+        deferredPrompt.prompt();
+        const choice = await deferredPrompt.userChoice;
+        if (choice && choice.outcome === 'accepted') {
+          setIsAppInstalled(true);
+          setDeferredPrompt(null);
+        }
+      } catch {
+        setShowInstallModal(true);
+      }
+    } else {
+      setShowInstallModal(true);
+    }
+  };
+
   // Filter & Sort Logic
   const filteredRestaurants = useMemo(() => {
     return restaurants
@@ -396,7 +479,9 @@ export function App() {
           return false;
         }
 
-        if (selectedCategory !== '전체' && r.category !== selectedCategory) {
+        // Category filter: if search query explicitly specifies a category, don't let selectedCategory block it
+        const isCategoryQuery = ['한식', '일식', '중식', '양식', '아시안', '카페·디저트', '카페', '디저트', '주점·바', '주점'].includes(searchQuery.trim());
+        if (selectedCategory !== '전체' && r.category !== selectedCategory && !isCategoryQuery) {
           return false;
         }
 
@@ -404,9 +489,12 @@ export function App() {
           const query = searchQuery.toLowerCase().trim();
           const matchName = r.name.toLowerCase().includes(query);
           const matchCategory = r.category.toLowerCase().includes(query);
+          const matchSubCategory = (r as any).sub_category ? (r as any).sub_category.toLowerCase().includes(query) : false;
           const matchAddress = r.address.toLowerCase().includes(query);
-          const matchMenu = r.menus.some((m) => m.name.toLowerCase().includes(query));
-          if (!matchName && !matchCategory && !matchAddress && !matchMenu) {
+          const matchMenu = r.menus.some((m) => m.name.toLowerCase().includes(query) || (m.description && m.description.toLowerCase().includes(query)));
+          const matchDesc = r.description ? r.description.toLowerCase().includes(query) : false;
+          const matchFeatures = r.features ? r.features.some((f) => f.toLowerCase().includes(query)) : false;
+          if (!matchName && !matchCategory && !matchSubCategory && !matchAddress && !matchMenu && !matchDesc && !matchFeatures) {
             return false;
           }
         }
@@ -660,7 +748,7 @@ GRANT EXECUTE ON FUNCTION public.report_review TO anon, authenticated, service_r
           onSearchChange={setSearchQuery}
           isMobileFrame={isMobileFrame}
           onToggleFrame={() => setIsMobileFrame((prev) => !prev)}
-          onInstallClick={() => setShowInstallModal(true)}
+          onInstallClick={handleInstallClick}
           currentUser={currentUser}
           onOpenAuth={() => {
             setAuthModalMode('login');
@@ -1329,6 +1417,22 @@ GRANT EXECUTE ON FUNCTION public.report_review TO anon, authenticated, service_r
                 원클릭으로 바로 실행할 수 있습니다.
               </p>
               <div className="install-steps">
+                {deferredPrompt ? (
+                  <button
+                    type="button"
+                    className="pwa-native-install-cta-btn"
+                    onClick={handleInstallClick}
+                  >
+                    <Download size={18} />
+                    <span>지금 바로 기기에 설치하기 (원클릭)</span>
+                  </button>
+                ) : isAppInstalled ? (
+                  <div className="pwa-installed-badge-box">
+                    <CheckCircle2 size={18} color="#16a34a" />
+                    <span>이미 기기에 앱이 설치되어 있습니다!</span>
+                  </div>
+                ) : null}
+
                 <div className="step-item">
                   <CheckCircle size={16} />
                   <span><strong>모바일 Safari:</strong> 하단 공유 버튼 → [홈 화면에 추가]</span>

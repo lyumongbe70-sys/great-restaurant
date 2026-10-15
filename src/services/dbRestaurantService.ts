@@ -234,7 +234,10 @@ export async function fetchRestaurantsFromDb(options: FetchDbOptions = {}): Prom
     }
 
     if (options.search && options.search.trim()) {
-      query = query.ilike('name', `%${options.search.trim()}%`);
+      const term = options.search.trim();
+      query = query.or(
+        `name.ilike.%${term}%,category.ilike.%${term}%,sub_category.ilike.%${term}%,address.ilike.%${term}%,road_address.ilike.%${term}%,description.ilike.%${term}%`
+      );
     }
 
     // Default DB ordering by updated_at or rating
